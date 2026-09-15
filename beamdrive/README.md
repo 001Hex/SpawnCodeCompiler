@@ -10,35 +10,70 @@ The whole game is one 376 KB HTML file with no network requests at runtime.
 
 ## Get it onto an iPhone
 
-**The good way — installs to the Home Screen, runs fullscreen and offline:**
+**iOS will not open a local HTML file in Safari.** Tapping an `.html` in the
+Files app hands it to Quick Look, a restricted preview that will not give the
+page a WebGL context, and Safari refuses `file://` URLs entirely. That is an
+Apple restriction, not a bug in the game — anything WebGL has to be served
+over HTTP(S), even if the server is the phone itself.
 
-1. Put `dist/` on any HTTPS host (GitHub Pages, Netlify, a Cloudflare Pages
-   project — anything that serves static files).
-2. Open the URL in Safari on the phone.
-3. **Share → Add to Home Screen.**
-4. Launch it from the icon. It runs fullscreen with no browser chrome, and a
-   service worker keeps it working with no connection at all after the first
-   visit.
+So there are three routes that actually work. The first is the good one.
 
-Turning on GitHub Pages for this repo: *Settings → Pages → Deploy from a
-branch*, pick the branch and set the folder to `/beamdrive/dist`.
+### 1. GitHub Pages (recommended — free, and gives a real app icon)
 
-**The quick way — one file, no hosting:**
+This repo is public, so Pages is free.
 
-Download `BeamDrive.html` to the phone (AirDrop, or save it from Safari into
-Files), then tap it. It opens in Safari and plays. You lose fullscreen and the
-Home Screen icon, but nothing else.
+1. Go to **Settings → Pages** on this repo.
+2. Under *Build and deployment*, set **Source: Deploy from a branch**.
+3. **Branch:** `claude/beamng-ios-web-port-8j498v` (or `main` after merging)
+   and **Folder:** `/docs`. Save.
+4. Wait a minute or two, then open on the phone:
 
-**From a computer on the same Wi-Fi:**
+   `https://001hex.github.io/SpawnCodeCompiler/`
 
-```bash
-cd beamdrive/dist
-python3 -m http.server 8080
+5. In Safari: **Share → Add to Home Screen.**
+
+Launch it from the icon and it runs fullscreen with no browser chrome. A
+service worker caches everything on the first visit, so after that it works
+with no connection at all — on a plane, on the Tube, anywhere.
+
+Pages can only publish from `/` or `/docs`, which is why the build mirrors
+itself into `docs/` at the repo root. Re-run `node tools/build.js` and commit
+`docs/` to publish an update.
+
+### 2. Serve it from the phone itself (no computer, no repo settings)
+
+Install **a-Shell** from the App Store (free). Then:
+
+```sh
+pickFolder            # point it at wherever you saved BeamDrive.html
+python3 -m http.server 8000
 ```
 
-Then open `http://<your-computer's-LAN-IP>:8080` on the phone. Note that
-`Add to Home Screen` and the offline worker need HTTPS or `localhost`, so over
-plain HTTP on a LAN you get the game but not the install.
+Leave a-Shell open and go to `http://localhost:8000/BeamDrive.html` in Safari.
+`localhost` counts as a secure origin, so Add to Home Screen works from here
+too.
+
+**Working Copy** (also free for public repos) is the tidier version of this:
+clone the repo, and use its built-in server to open `beamdrive/dist/` in
+Safari.
+
+### 3. Serve it from a computer on the same Wi-Fi
+
+```bash
+cd beamdrive
+node tools/serve.js          # prints the LAN address to type on the phone
+```
+
+or `python3 -m http.server 8080` from inside `beamdrive/dist`. Over plain
+HTTP on a LAN you get the game, but not the Home Screen install or offline
+caching — those need HTTPS or `localhost`.
+
+### What `BeamDrive.html` is still good for
+
+The single self-contained file plays fine in any **desktop** browser — just
+double-click it. It is also the easiest thing to hand to someone else, since
+it has no other files to go with it. It just cannot be opened from local
+storage on iOS.
 
 ### Settings for an iPhone 17 Pro
 

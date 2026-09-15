@@ -19,6 +19,10 @@ const ROOT = path.resolve(__dirname, '..');
 const SRC = path.join(ROOT, 'src');
 const WEB = path.join(ROOT, 'web');
 const DIST = path.join(ROOT, 'dist');
+/* GitHub Pages, deploying from a branch, only offers "/" or "/docs" as the
+   publish folder — it cannot serve a nested path like /beamdrive/dist. So the
+   same PWA build is mirrored into <repo>/docs, which Pages can serve. */
+const DOCS = path.resolve(ROOT, '..', 'docs');
 
 const pkgVersion = '1.0.0';
 
@@ -212,6 +216,17 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   } else {
     log('self-contained check passed — no runtime network requests');
   }
+
+  // ---- mirror the PWA build into <repo>/docs for GitHub Pages ----------
+  fs.mkdirSync(DOCS, { recursive: true });
+  for (const f of ['index.html', 'manifest.webmanifest', 'sw.js',
+                   'icon-180.png', 'icon-192.png', 'icon-512.png']) {
+    fs.copyFileSync(path.join(DIST, f), path.join(DOCS, f));
+  }
+  // Pages runs Jekyll by default, which skips files starting with an
+  // underscore and can mangle things; this opts out.
+  fs.writeFileSync(path.join(DOCS, '.nojekyll'), '');
+  log('docs/ mirrored for GitHub Pages');
 
   log('done');
 }
