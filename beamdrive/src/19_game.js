@@ -122,6 +122,10 @@
 
   /* -------------------------------------------------------------- Game -- */
 
+  // Hard upper bound on a solver step. Past this the beam stiffnesses in
+  // use are no longer stable under explicit integration.
+  var MAX_STEP = 1 / 240;
+
   function Game(canvas) {
     this.canvas = canvas;
     this.renderer = new B.Renderer(canvas);
@@ -147,9 +151,9 @@
     this.scene = { env: null, opaque: [], instanced: [], transparent: [], particles: null,
                    headlight: { on: false, pos: [0, 0, 0], dir: [0, 0, 1] }, bloomStrength: 0.34 };
 
-    this.accumulator = 0;
     this.fixedStep = 1 / 480;
-    this.maxSteps = 20;
+    this.maxSteps = 40;
+    this.substeps = 0;
     this.time = 0;
     this.paused = false;
     this.running = false;
@@ -478,14 +482,15 @@
 
     this.refreshBroadphase();
 
-    this.accumulator += dt;
-    var steps = 0;
-    while (this.accumulator >= this.fixedStep && steps < this.maxSteps) {
-      this.physicsStep(this.fixedStep);
-      this.accumulator -= this.fixedStep;
-      steps++;
-    }
-    if (steps >= this.maxSteps) this.accumulator = 0;   // give up rather than spiral
+    var steps = Math.ceil(dt / this.fixedStep);
+    if (steps < 1) steps = 1;
+    if (steps > this.maxSteps) steps = this.maxSteps;
+    // dt/steps is never larger than fixedStep unless the maxSteps cap bit,
+    // and MAX_STEP is the solver's stability ceiling either way.
+    var h = dt / steps;
+    if (h > MAX_STEP) h = MAX_STEP;
+    this.substeps = steps;
+    for (var si = 0; si < steps; si++) this.physicsStep(h);
 
     this.postPhysics(dt);
   };
@@ -800,7 +805,7 @@
           geometry: part.skin.geometry,
           matrix: frame,
           material: part.material,
-          castShadow: part.name !== 'glass'
+          castShadow: part.castShadow !== false && part.name !== 'glass'
         };
         if (part.material.transparent) s.transparent.push(entry);
         else s.opaque.push(entry);
@@ -895,7 +900,7 @@
       V.normalize(hl.dir, hl.dir);
     }
 
-    s.bloomStrength = 0.30 + (s.env.sunDir[1] < 0.2 ? 0.20 : 0);
+    s.bloomStrength = 0.20 + (s.env.sunDir[1] < 0.2 ? 0.14 : 0);
     return s;
   };
 
@@ -913,8 +918,9 @@
     // stiffnesses; lower presets trade some fidelity for headroom.
     this.fixedStep = (name === 'low') ? 1 / 300
                    : (name === 'medium' ? 1 / 360 : (name === 'ultra' ? 1 / 600 : 1 / 480));
-    // Enough steps to absorb a 45 ms hitch without the sim falling behind.
-    this.maxSteps = Math.ceil(0.045 / this.fixedStep);
+    // Enough steps to hold real time down to about 12 fps before the
+    // simulation is allowed to slow down.
+    this.maxSteps = Math.ceil(0.085 / this.fixedStep);
     this.particles.enabled = name !== 'low';
     this.camera.far = q.drawDistance * 1.6;
     // The terrain mesh LOD is baked in, so rebuild it if the step changed.

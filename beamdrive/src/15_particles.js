@@ -234,14 +234,14 @@
 
   Particles.prototype.tyreSmoke = function (x, y, z, vx, vz, intensity, surface) {
     var tint = [0.80, 0.80, 0.82];
-    var alpha = 0.16 * intensity;
-    var size = 0.30;
+    var alpha = 0.085 * intensity;
+    var size = 0.22;
     if (surface === B.SURF.DIRT || surface === B.SURF.SAND) {
-      tint = [0.52, 0.42, 0.29]; alpha = 0.26 * intensity; size = 0.42;
+      tint = [0.52, 0.42, 0.29]; alpha = 0.15 * intensity; size = 0.30;
     } else if (surface === B.SURF.GRASS) {
-      tint = [0.40, 0.42, 0.26]; alpha = 0.18 * intensity; size = 0.34;
+      tint = [0.40, 0.42, 0.26]; alpha = 0.10 * intensity; size = 0.26;
     } else if (surface === B.SURF.SNOW) {
-      tint = [0.94, 0.95, 0.98]; alpha = 0.30 * intensity; size = 0.40;
+      tint = [0.94, 0.95, 0.98]; alpha = 0.17 * intensity; size = 0.30;
     }
     this.spawn({
       x: x + (Math.random() - 0.5) * 0.22,
@@ -251,7 +251,7 @@
       vy: 0.5 + Math.random() * 1.0,
       vz: vz * 0.16 + (Math.random() - 0.5) * 1.1,
       life: 0.9 + Math.random() * 1.1,
-      size0: size, size1: size * 4.6,
+      size0: size, size1: size * 3.4,
       color: tint, alpha: alpha, drag: 1.5, gravity: 0.35, soft: 1
     });
   };

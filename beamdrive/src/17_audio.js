@@ -86,65 +86,113 @@
     return s;
   };
 
-  /* ------------------------------------------------------------ engine -- */
+  /* ------------------------------------------------------------ engine --
+     An engine is one periodic waveform whose harmonics are phase-locked to
+     the firing frequency, not a stack of independent oscillators. The old
+     version summed seven free-running oscillators, which drift against each
+     other and chorus — it read as a synth pad, not a motor.
+
+     Here the whole harmonic series is baked into a PeriodicWave per engine,
+     driven by a single oscillator at the firing frequency, so every harmonic
+     keeps its phase relationship. A half-order oscillator underneath supplies
+     the uneven lope of a V8, and a filtered noise bed does induction roar. */
+  Audio.prototype.engineWave = function (harmonics, growl) {
+    var key = harmonics.join(',') + '|' + growl.toFixed(2);
+    this._waveCache = this._waveCache || {};
+    if (this._waveCache[key]) return this._waveCache[key];
+    var N = 34;
+    var real = new Float32Array(N);
+    var imag = new Float32Array(N);
+    for (var k = 1; k < N; k++) {
+      // Rolloff, then lift the orders this engine is defined by.
+      var amp = 1 / (1 + k * 0.62);
+      var emph = 0.42;
+      for (var h = 0; h < harmonics.length; h++) {
+        var m = harmonics[h];
+        if (Math.abs(k - m) < 0.51) emph = 1.65;
+        else if (Math.abs(k - m * 2) < 0.51) emph = Math.max(emph, 1.05);
+      }
+      // Growl adds weight to the low-order content.
+      if (k <= 3) emph *= 1 + growl * 0.85;
+      imag[k] = amp * emph;
+    }
+    var w = this.ctx.createPeriodicWave(real, imag, { disableNormalization: false });
+    this._waveCache[key] = w;
+    return w;
+  };
+
   Audio.prototype.buildEngine = function () {
     var ctx = this.ctx;
-    this.engine = { oscs: [], gains: [] };
 
-    // Tone stack: one oscillator per firing harmonic.
     var shaper = this.engineShaper = ctx.createWaveShaper();
     var curve = new Float32Array(1024);
     for (var i = 0; i < 1024; i++) {
       var x = (i / 1023) * 2 - 1;
-      // Soft asymmetric clip gives the harmonics a bit of bite.
-      curve[i] = Math.tanh(x * 2.1) * 0.82 + Math.tanh(x * 5.5) * 0.18;
+      // Soft asymmetric clip: adds the bite a clean waveform lacks.
+      curve[i] = Math.tanh(x * 1.9) * 0.80 + Math.tanh(x * 5.0) * 0.20;
     }
     shaper.curve = curve;
     shaper.oversample = '2x';
 
     var tone = this.engineTone = ctx.createGain();
-    tone.gain.value = 0.42;
+    tone.gain.value = 0.50;
 
     var lp = this.engineLP = ctx.createBiquadFilter();
     lp.type = 'lowpass';
     lp.frequency.value = 900;
-    lp.Q.value = 0.9;
+    lp.Q.value = 0.8;
 
     var hp = this.engineHP = ctx.createBiquadFilter();
     hp.type = 'highpass';
-    hp.frequency.value = 42;
+    hp.frequency.value = 48;
 
+    // Two resonances standing in for the exhaust and the bodyshell.
     var body = this.engineBody = ctx.createBiquadFilter();
     body.type = 'peaking';
     body.frequency.value = 180;
-    body.Q.value = 1.1;
-    body.gain.value = 6;
+    body.Q.value = 1.4;
+    body.gain.value = 7;
+
+    var pipe = this.enginePipe = ctx.createBiquadFilter();
+    pipe.type = 'peaking';
+    pipe.frequency.value = 480;
+    pipe.Q.value = 2.2;
+    pipe.gain.value = 5;
 
     tone.connect(shaper);
     shaper.connect(body);
-    body.connect(lp);
+    body.connect(pipe);
+    pipe.connect(lp);
     lp.connect(hp);
     hp.connect(this.engineBus);
 
-    for (var h = 0; h < 7; h++) {
-      var o = ctx.createOscillator();
-      o.type = h === 0 ? 'sawtooth' : (h % 2 ? 'square' : 'sawtooth');
-      o.frequency.value = 60;
-      var g = ctx.createGain();
-      g.gain.value = 0;
-      o.connect(g);
-      g.connect(tone);
-      o.start();
-      this.engine.oscs.push(o);
-      this.engine.gains.push(g);
-    }
+    // Main firing-order oscillator.
+    var osc = this.engineOsc = ctx.createOscillator();
+    osc.frequency.value = 60;
+    var og = this.engineOscGain = ctx.createGain();
+    og.gain.value = 0;
+    osc.connect(og);
+    og.connect(tone);
+    osc.start();
 
-    // Induction / exhaust roar: noise gated by a bandpass that tracks rpm.
+    // Half-order: the uneven beat of a cross-plane V8.
+    var sub = this.engineSub = ctx.createOscillator();
+    sub.type = 'sawtooth';
+    sub.frequency.value = 30;
+    var sg = this.engineSubGain = ctx.createGain();
+    sg.gain.value = 0;
+    sub.connect(sg);
+    sg.connect(tone);
+    sub.start();
+
+    this._waveKey = null;
+
+    // Induction / exhaust roar.
     var n = this.engineNoise = this.noiseSource();
     var nbp = this.engineNoiseBP = ctx.createBiquadFilter();
     nbp.type = 'bandpass';
     nbp.frequency.value = 420;
-    nbp.Q.value = 0.85;
+    nbp.Q.value = 0.8;
     var ng = this.engineNoiseGain = ctx.createGain();
     ng.gain.value = 0;
     n.connect(nbp);
@@ -152,7 +200,7 @@
     ng.connect(this.engineBus);
     n.start();
 
-    // Turbo whistle and blow-off, used when the spec asks for it.
+    // Turbo whistle.
     var to = this.turboOsc = ctx.createOscillator();
     to.type = 'sine';
     to.frequency.value = 3000;
@@ -232,18 +280,23 @@
     var harmonics = s.harmonics || [1, 2, 3, 4];
     var growl = s.growl !== undefined ? s.growl : 0.3;
 
-    for (var h = 0; h < this.engine.oscs.length; h++) {
-      var mult = harmonics[h % harmonics.length] * (1 + Math.floor(h / harmonics.length));
-      var freq = M.clamp(f0 * mult, 18, 11000);
-      this.engine.oscs[h].frequency.setTargetAtTime(freq, now, tc);
-      // Higher harmonics come in with load; the fundamental always sits there.
-      var base = 1 / (1 + mult * 0.85);
-      var g = base * (0.30 + load * 0.78) * (h === 0 ? 1.25 : 1.0);
-      if (mult > 3) g *= (0.35 + growl * 0.9);
-      g *= s.engineOn ? 1 : 0;
-      if (s.gearChanging) g *= 0.45;
-      this.engine.gains[h].gain.setTargetAtTime(g * 0.30, now, tc);
+    // Swap the waveform only when the engine changes, not every frame.
+    var key = harmonics.join(',') + '|' + growl.toFixed(2);
+    if (key !== this._waveKey) {
+      this.engineOsc.setPeriodicWave(this.engineWave(harmonics, growl));
+      this._waveKey = key;
     }
+
+    this.engineOsc.frequency.setTargetAtTime(M.clamp(f0, 12, 4000), now, tc);
+    this.engineSub.frequency.setTargetAtTime(M.clamp(f0 * 0.5, 6, 2000), now, tc);
+
+    var on = s.engineOn ? 1 : 0;
+    var shiftCut = s.gearChanging ? 0.45 : 1;
+    this.engineOscGain.gain.setTargetAtTime(
+      (0.16 + load * 0.30) * on * shiftCut, now, tc);
+    this.engineSubGain.gain.setTargetAtTime(
+      (0.020 + load * 0.055) * growl * on * shiftCut, now, tc);
+    this.enginePipe.frequency.setTargetAtTime(M.clamp(f0 * 4.0, 120, 3000), now, 0.07);
 
     this.engineLP.frequency.setTargetAtTime(
       M.clamp(420 + rev * 3400 + load * 2400, 300, 11000), now, 0.05);

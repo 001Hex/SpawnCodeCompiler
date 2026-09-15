@@ -124,7 +124,7 @@
 
     // ---------------------------------------------------------- FOV ------
     var speedFov = Math.min(speed / 62, 1.25) * 13 * M.DEG * this.fovSpeedGain;
-    var targetFov = this.baseFov + speedFov;
+    var targetFov = this.baseFov + speedFov + (this.fovBoost || 0);
     this._fov = M.damp(this._fov, targetFov, 3.2, dt);
     this.fov = this._fov;
 
@@ -146,33 +146,34 @@
     var local = null, lookLocal = null;
     var stiff = 7.0, lookStiff = 9.0;
     var useBodyUp = false;
+    var fovBoost = 0;
 
     var len = veh.spec.length;
     switch (this.mode) {
       case 'chase':
-        local = [0, 0.62 * veh.spec.height + 0.42, -len * 0.92 - 1.35];
-        lookLocal = [0, 0.42 * veh.spec.height + 0.20, 2.2];
+        local = [0, 0.30 * veh.spec.height + 0.42, -len * 0.92 - 1.35];
+        lookLocal = [0, 0.10 * veh.spec.height + 0.20, 2.2];
         stiff = 6.5; lookStiff = 10;
         break;
       case 'chaseFar':
-        local = [0, 0.95 * veh.spec.height + 1.55, -len * 1.55 - 2.6];
-        lookLocal = [0, 0.40 * veh.spec.height, 3.0];
+        local = [0, 0.55 * veh.spec.height + 1.55, -len * 1.55 - 2.6];
+        lookLocal = [0, 0.08 * veh.spec.height, 3.0];
         stiff = 4.4; lookStiff = 8;
         break;
       case 'bonnet':
-        local = [rig.wheelPos[0] * 0.30, veh.spec.height * 0.62,
-                 veh.spec.length * 0.20];
-        lookLocal = [0, veh.spec.height * 0.55, 14];
+        local = rig.bonnetPos;
+        lookLocal = [rig.bonnetPos[0], rig.bonnetPos[1] - 0.10, rig.bonnetPos[2] + 14];
         stiff = 40; lookStiff = 26; useBodyUp = true;
         break;
       case 'cockpit':
-        local = [rig.eyePos[0], rig.eyePos[1] + 0.045, rig.eyePos[2] + 0.02];
-        lookLocal = [rig.eyePos[0], rig.eyePos[1], rig.eyePos[2] + 14];
+        local = [rig.eyePos[0], rig.eyePos[1] + 0.035, rig.eyePos[2] - 0.10];
+        lookLocal = [rig.eyePos[0] * 0.55, rig.eyePos[1] - 0.12, rig.eyePos[2] + 14];
         stiff = 60; lookStiff = 34; useBodyUp = true;
+        fovBoost = 9 * M.DEG;
         break;
       case 'bumper':
-        local = [0, veh.spec.height * 0.24, veh.spec.length * 0.46];
-        lookLocal = [0, veh.spec.height * 0.24, 16];
+        local = rig.bumperPos;
+        lookLocal = [0, rig.bumperPos[1], rig.bumperPos[2] + 16];
         stiff = 48; lookStiff = 30; useBodyUp = true;
         break;
     }
@@ -242,6 +243,7 @@
     }
     this.roll = this._roll;
 
+    this.fovBoost = fovBoost;
     this.position.set(this._pos);
     this.target.set(this._look);
   };

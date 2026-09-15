@@ -59,6 +59,25 @@
     return out;
   }
 
+  /* How far the lower body edge is lifted at this point along the car, to
+     cut a wheel arch. Without this the flanks run straight down past the
+     wheels and the car reads as a featureless slab. */
+  function archLiftAt(z, spec) {
+    var lift = 0;
+    var r = spec.wheel.radius;
+    var half = r * 1.42;
+    var axles = [spec.frontAxleZ, spec.rearAxleZ];
+    for (var a = 0; a < 2; a++) {
+      var d = Math.abs(z - axles[a]);
+      if (d >= half) continue;
+      var t = 1 - d / half;
+      // sqrt gives a round arch rather than a shallow bulge.
+      var l = Math.sqrt(t) * r * 1.16;
+      if (l > lift) lift = l;
+    }
+    return lift;
+  }
+
   /* Closed 16-point silhouette for one station, traced anticlockwise seen
      from +Z. Identical point count on every station so the loft stitches. */
   function sectionOutline(s) {
@@ -66,11 +85,15 @@
     var bw = s.beltW, by = s.beltY, rw = s.roofW, ry = s.roofY;
     var shoulderY = by + (ry - by) * 0.42;
     var shoulderW = rw + (bw - rw) * 0.58;
+    // The arch raises the flank but never the floor pan centreline, which
+    // is what makes it read as an opening rather than a taller sill.
+    var arch = s.archLift || 0;
+    var a1 = Math.min(arch, Math.max(sy - fy, 0) + (by - sy) * 0.55);
     var pts = [
       [0, fy],
-      [sw * 0.62, fy],
-      [sw, fy + (sy - fy) * 0.42],
-      [bw * 0.985, sy + (by - sy) * 0.42],
+      [sw * 0.62, fy + a1 * 0.30],
+      [sw, fy + (sy - fy) * 0.42 + a1 * 0.92],
+      [bw * 0.985, sy + (by - sy) * 0.42 + a1 * 0.34],
       [bw, by],
       [shoulderW, shoulderY],
       [rw * 1.02, by + (ry - by) * 0.84],
@@ -81,6 +104,61 @@
     var full = pts.slice();
     for (var i = pts.length - 2; i >= 1; i--) full.push([-pts[i][0], pts[i][1]]);
     return full;   // 16 points
+  }
+
+  /* Which sections form the greenhouse.
+
+     A fixed roof-rise threshold does not work: the windscreen slopes down
+     onto the bonnet, so a section a good way forward of the A-pillar still
+     clears any small absolute figure. That put the seat, the steering wheel
+     and the driver's eye out on the bonnet, in front of the windscreen —
+     which is why the cockpit camera had no car around it. Scale the
+     threshold to this body's own maximum roof rise instead. */
+  function cabinRange(sections) {
+    var maxRise = 0, i;
+    for (i = 0; i < sections.length; i++) {
+      var rise = sections[i].roofY - sections[i].beltY;
+      if (rise > maxRise) maxRise = rise;
+    }
+    var threshold = Math.max(0.12, maxRise * 0.62);
+    var first = -1, last = -1;
+    for (i = 0; i < sections.length; i++) {
+      if (sections[i].roofY - sections[i].beltY >= threshold) {
+        if (first < 0) first = i;
+        last = i;
+      }
+    }
+    if (first < 0) {
+      first = Math.floor(sections.length * 0.35);
+      last = Math.floor(sections.length * 0.65);
+    }
+    return { first: first, last: last, threshold: threshold };
+  }
+
+  /* Seating package, derived once from the greenhouse and used by both the
+     interior geometry and the driver's IK targets. Everything is measured
+     from the hip point, the way a real seating buck is. */
+  function cabinRig(spec, sections) {
+    var cr = cabinRange(sections);
+    var cFront = sections[cr.last];
+    var cRear = sections[cr.first];
+    var floorY = cFront.floorY + 0.035;
+    var hipZ = cFront.z - 1.05;
+    // Do not push the seat out through the back of a short cabin.
+    if (hipZ < cRear.z + 0.35) hipZ = cRear.z + 0.35;
+    var hipY = floorY + 0.30;
+    var driverX = (spec.rhd ? 1 : -1) * cFront.beltW * 0.42;
+    return {
+      range: cr, cFront: cFront, cRear: cRear, floorY: floorY, driverX: driverX,
+      hipZ: hipZ, hipY: hipY,
+      wheelZ: hipZ + 0.46, wheelY: hipY + 0.30,
+      eyeZ: hipZ + 0.06, eyeY: hipY + 0.62,
+      pedalZ: hipZ + 0.74, pedalY: floorY + 0.09,
+      shifterZ: hipZ + 0.28,
+      bonnetZ: cFront.z + 0.55, bonnetY: cFront.beltY + 0.06,
+      bumperZ: sections[sections.length - 1].z - 0.25,
+      bumperY: sections[sections.length - 1].beltY - 0.10
+    };
   }
 
   /* --------------------------------------------------------- node lattice */
@@ -123,7 +201,7 @@
       var s = keys[i];
       var topW = s.roofY > s.beltY + 0.02 ? s.roofW : s.beltW * 0.80;
       var topY = s.roofY;
-      var isCabin = s.roofY > s.beltY + 0.10;
+      var isCabin = s.roofY > s.beltY + 0.10;   // structural: any raised roof
       // The safety cell must not be part of the crumple zone, so the cabin
       // stations are the only ones flagged as frame references.
       var frameRef = isCabin || (i > 0 && i < nStations - 1);
@@ -454,12 +532,9 @@
   // Windows are cut as separate panels sitting just inside the greenhouse.
   function buildGlass(spec, sections) {
     var mb = new Geo.MeshBuilder();
-    var cabin = [];
-    for (var i = 0; i < sections.length; i++) {
-      if (sections[i].roofY > sections[i].beltY + 0.10) cabin.push(i);
-    }
-    if (cabin.length < 2) return mb;
-    var first = cabin[0], last = cabin[cabin.length - 1];
+    var cr = cabinRange(sections);
+    var first = cr.first, last = cr.last;
+    if (last - first < 1) return mb;
     var inset = 0.018;
 
     // Side glass: a strip between the belt line and just under the roof.
@@ -499,6 +574,89 @@
     }
     if (last < sections.length - 1) screen(last + 1, last, false);   // windscreen
     if (first > 0) screen(first - 1, first, true);                   // backlight
+    mb.computeNormals();
+    return mb;
+  }
+
+  /* The body shell is single-sided, so from the driver's seat you look
+     straight out through the roof and pillars and the cockpit view has
+     nothing framing it. This builds the inward-facing surfaces a cabin
+     actually has: headliner, pillars and door cards, inset just inside the
+     shell and wound the other way round so they face the occupant.       */
+  function buildCabinShell(spec, sections) {
+    var mb = new Geo.MeshBuilder();
+    var cr = cabinRange(sections);
+    var cabin = [];
+    for (var i = cr.first; i <= cr.last; i++) cabin.push(i);
+    if (cabin.length < 2) return mb;
+
+    var headliner = [0.135, 0.138, 0.148];
+    var doorCard = [0.098, 0.100, 0.110];
+    var inset = 0.030;
+
+    // Outline index 8 is the roof centreline, 4 and 12 the belt line at the
+    // widest point, 0 the floor centreline. See sectionOutline().
+    var ROOF = [6, 7, 8, 9, 10];
+    var DOOR_R = [0, 1, 2, 3, 4];
+    var DOOR_L = [12, 13, 14, 15, 0];
+
+    function insetPt(p, cx, cy) {
+      var dx = cx - p[0], dy = cy - p[1];
+      var l = Math.hypot(dx, dy) || 1;
+      return [p[0] + dx / l * inset, p[1] + dy / l * inset];
+    }
+
+    function strip(idxList, color) {
+      for (var c = 0; c < cabin.length - 1; c++) {
+        var sA = sections[cabin[c]], sB = sections[cabin[c + 1]];
+        var oA = sectionOutline(sA), oB = sectionOutline(sB);
+        var caY = (sA.floorY + sA.roofY) * 0.5, cbY = (sB.floorY + sB.roofY) * 0.5;
+        for (var k = 0; k < idxList.length - 1; k++) {
+          var i0 = idxList[k], i1 = idxList[k + 1];
+          var a0 = insetPt(oA[i0], 0, caY), a1 = insetPt(oA[i1], 0, caY);
+          var b0 = insetPt(oB[i0], 0, cbY), b1 = insetPt(oB[i1], 0, cbY);
+          var base = mb.vertexCount();
+          mb.vert(a0[0], a0[1], sA.z, 0, 0, 0, 0, 0, color);
+          mb.vert(a1[0], a1[1], sA.z, 0, 0, 0, 1, 0, color);
+          mb.vert(b1[0], b1[1], sB.z, 0, 0, 0, 1, 1, color);
+          mb.vert(b0[0], b0[1], sB.z, 0, 0, 0, 0, 1, color);
+          // Reverse winding relative to the outer shell so this faces in.
+          mb.quad(base + 3, base + 2, base + 1, base);
+        }
+      }
+    }
+
+    strip(ROOF, headliner);
+    strip(DOOR_R, doorCard);
+    strip(DOOR_L, doorCard);
+
+    // A- and C-pillar caps: close the gap at each end of the greenhouse so
+    // the view is framed rather than open to the sky.
+    function endCap(si, flip) {
+      var s = sections[si];
+      var o = sectionOutline(s);
+      var cy = (s.floorY + s.roofY) * 0.5;
+      var ring = ROOF.concat([11, 12, 13, 14, 15, 0, 1, 2, 3, 4, 5]);
+      var cxm = 0, cym = 0;
+      for (var q = 0; q < ring.length; q++) {
+        var pt = insetPt(o[ring[q]], 0, cy);
+        cxm += pt[0]; cym += pt[1];
+      }
+      cxm /= ring.length; cym /= ring.length;
+      var ci = mb.vert(cxm, cym, s.z, 0, 0, flip ? 1 : -1, 0.5, 0.5, headliner);
+      var start = mb.vertexCount();
+      for (var r = 0; r < ring.length; r++) {
+        var p = insetPt(o[ring[r]], 0, cy);
+        mb.vert(p[0], p[1], s.z, 0, 0, flip ? 1 : -1, r / ring.length, 0, headliner);
+      }
+      for (var t = 0; t < ring.length - 1; t++) {
+        if (flip) mb.tri(ci, start + t, start + t + 1);
+        else mb.tri(ci, start + t + 1, start + t);
+      }
+    }
+    // Only the rear bulkhead is closed; the front stays open for the glass.
+    endCap(cabin[0], false);
+
     mb.computeNormals();
     return mb;
   }
@@ -586,14 +744,12 @@
   function buildInterior(spec, sections) {
     var mb = new Geo.MeshBuilder();
     var n = sections.length;
-    var cabinIdx = [];
-    for (var i = 0; i < n; i++) if (sections[i].roofY > sections[i].beltY + 0.10) cabinIdx.push(i);
-    if (!cabinIdx.length) return mb;
-    var cRear = sections[cabinIdx[0]];
-    var cFront = sections[cabinIdx[cabinIdx.length - 1]];
+    var rig = cabinRig(spec, sections);
+    var cRear = rig.cRear, cFront = rig.cFront;
+    if (rig.range.last - rig.range.first < 1) return mb;
     var midZ = (cRear.z + cFront.z) * 0.5;
     var cabinLen = cFront.z - cRear.z;
-    var floorY = cFront.floorY + 0.035;
+    var floorY = rig.floorY;
     var trimCol = [0.115, 0.118, 0.128];
     var seatCol = [0.075, 0.078, 0.088];
 
@@ -614,20 +770,21 @@
     place(Geo.roundedBox(cFront.beltW * 1.72, 0.17, 0.32, 0.035, trimCol, 2),
       0, cFront.beltY - 0.055, cFront.z - 0.12, 0.26);
     // Instrument binnacle, in front of the driver.
-    var dx = (spec.rhd ? 1 : -1) * cFront.beltW * 0.46;
+    var dx = rig.driverX;
     place(Geo.roundedBox(0.34, 0.11, 0.17, 0.03, [0.045, 0.045, 0.055], 2),
       dx, cFront.beltY - 0.012, cFront.z - 0.26, 0.30);
     // Centre console with gear lever.
-    place(Geo.roundedBox(0.20, 0.23, 0.54, 0.03, trimCol, 2), 0, floorY + 0.115, cFront.z - 0.52);
-    place(Geo.cylinder(0.013, 0.018, 0.17, 8, [0.14, 0.14, 0.15], true), 0, floorY + 0.29, cFront.z - 0.42);
-    place(Geo.sphere(0.033, 10, 8, [0.085, 0.085, 0.095]), 0, floorY + 0.375, cFront.z - 0.42);
+    place(Geo.roundedBox(0.20, 0.23, 0.58, 0.03, trimCol, 2), 0, floorY + 0.115, rig.shifterZ - 0.10);
+    place(Geo.cylinder(0.013, 0.018, 0.17, 8, [0.14, 0.14, 0.15], true), 0, floorY + 0.29, rig.shifterZ);
+    place(Geo.sphere(0.033, 10, 8, [0.085, 0.085, 0.095]), 0, floorY + 0.375, rig.shifterZ);
     // Handbrake.
     place(Geo.roundedBox(0.035, 0.035, 0.22, 0.014, [0.10, 0.10, 0.11], 2),
-      0.085, floorY + 0.26, cFront.z - 0.66, -0.55);
+      0.085, floorY + 0.26, rig.shifterZ - 0.26, -0.55);
 
-    // Front seats.
-    var seatX = cFront.beltW * 0.44;
-    var seatZ = cFront.z - 0.78;
+    // Front seats, positioned on the seating package so the driver is
+    // actually sitting in one rather than beside it.
+    var seatX = Math.abs(rig.driverX);
+    var seatZ = rig.hipZ - 0.06;
     for (var s = 0; s < 2; s++) {
       var sx = (s === 0 ? -1 : 1) * seatX;
       place(Geo.roundedBox(0.44, 0.11, 0.50, 0.05, seatCol, 2), sx, floorY + 0.13, seatZ + 0.10);
@@ -647,7 +804,7 @@
     // Pedal box.
     for (var p = 0; p < 2; p++) {
       place(Geo.roundedBox(0.075, 0.015, 0.14, 0.006, [0.16, 0.16, 0.17], 1),
-        dx + (p === 0 ? 0.075 : -0.075), floorY + 0.075, cFront.z + 0.06, 0.45);
+        rig.driverX + (p === 0 ? 0.075 : -0.075), rig.pedalY - 0.015, rig.pedalZ, 0.45);
     }
 
     mb.computeNormals();
@@ -690,13 +847,17 @@
   /* ------------------------------------------------------ public assembly */
 
   function buildVehicle(spec, paintColor) {
-    var sections = resampleStations(spec.stations, spec.meshSections || 20);
+    var sections = resampleStations(spec.stations, (spec.meshSections || 20) * 2);
+    for (var si = 0; si < sections.length; si++) {
+      sections[si].archLift = archLiftAt(sections[si].z, spec);
+    }
     var lattice = buildLattice(spec);
 
     var body = new B.SoftBody({ nodes: lattice.nodes, beams: lattice.beams });
     body.boundRadius = spec.length * 0.62;
 
     var shellMB = buildBodyShell(spec, sections);
+    var cabinMB = buildCabinShell(spec, sections);
     var glassMB = buildGlass(spec, sections);
     var lightMB = new Geo.MeshBuilder();
     var trimMB = buildTrim(spec, sections, lightMB);
@@ -723,6 +884,21 @@
           clearcoat: 1, opacity: 0.30, transparent: true, doubleSided: true
         },
         recomputeNormals: false
+      });
+    }
+    if (cabinMB.idx.length) {
+      parts.push({
+        name: 'cabin',
+        skin: new B.SkinnedMesh(cabinMB.toData(), lattice, { stiffness: 1.0 }),
+        material: {
+          // Double-sided: the trim reads correctly whether you are looking at
+          // a headliner from inside or a door top from outside, and it is only
+          // a few hundred triangles.
+          type: 0, baseColor: [1, 1, 1], roughness: 0.88, metallic: 0.02,
+          clearcoat: 0, opacity: 1, doubleSided: true
+        },
+        recomputeNormals: true,
+        castShadow: false
       });
     }
     parts.push({
@@ -757,33 +933,36 @@
       spec.wheel.rim, spec.wheel.spokes || 5,
       [0.035, 0.035, 0.040], spec.wheel.rimColor || [0.58, 0.60, 0.64]).toGeometry();
 
-    // Where the driver sits and what they hold on to. Everything the
-    // driver rig needs is derived from the frontmost greenhouse station.
-    var cFront = null, cRear = null;
-    for (var ci = sections.length - 1; ci >= 0; ci--) {
-      if (sections[ci].roofY > sections[ci].beltY + 0.10) { cFront = sections[ci]; break; }
-    }
-    for (var cj = 0; cj < sections.length; cj++) {
-      if (sections[cj].roofY > sections[cj].beltY + 0.10) { cRear = sections[cj]; break; }
-    }
-    if (!cFront) cFront = sections[Math.floor(sections.length / 2)];
-    if (!cRear) cRear = cFront;
-    var driverX = (spec.rhd ? 1 : -1) * cFront.beltW * 0.44;
-    var floorY = cFront.floorY + 0.035;
-    var seatZ = cFront.z - 0.78;
+    /* Where the driver sits and what they hold on to.
+
+       These come out of cabinRig in AUTHORED space, measured from the ground
+       plane — the same space the meshes are modelled in. The renderer draws
+       the car with the body frame as its model matrix, and that frame's
+       origin is the mass-weighted centre of the frame nodes, not the ground.
+       Skinned meshes get rebased for free (their vertices are displaced by
+       curLocal - restLocal, which carries the offset), but these loose rig
+       points do not. Left in authored space they land about half a metre
+       high: the camera ends up above the roof, which is why the cockpit view
+       had no car around it, and the driver floats over the roofline. */
+    var pack = cabinRig(spec, sections);
     var wheelRadius = spec.steeringWheelRadius || 0.175;
+    var o = body.frameRestCenter;
+    function rebase(x, y, z) { return [x - o[0], y - o[1], z - o[2]]; }
     var rig = {
-      hipPos: [driverX, floorY + 0.26, seatZ + 0.02],
-      wheelPos: [driverX, cFront.beltY - 0.045, cFront.z - 0.40],
+      hipPos: rebase(pack.driverX, pack.hipY, pack.hipZ),
+      wheelPos: rebase(pack.driverX, pack.wheelY, pack.wheelZ),
       wheelRadius: wheelRadius,
       wheelTilt: 0.38,
-      pedalPos: [driverX, floorY + 0.09, cFront.z + 0.04],
-      shifterPos: [0, floorY + 0.375, cFront.z - 0.42],
-      eyePos: [driverX, cFront.beltY + (cFront.roofY - cFront.beltY) * 0.40, seatZ + 0.14],
-      cabinRoofY: cFront.roofY,
-      cabinFrontZ: cFront.z,
-      cabinRearZ: cRear.z,
-      floorY: floorY
+      pedalPos: rebase(pack.driverX, pack.pedalY, pack.pedalZ),
+      shifterPos: rebase(0, pack.floorY + 0.375, pack.shifterZ),
+      eyePos: rebase(pack.driverX, pack.eyeY, pack.eyeZ),
+      bonnetPos: rebase(pack.driverX * 0.30, pack.bonnetY, pack.bonnetZ),
+      bumperPos: rebase(0, pack.bumperY, pack.bumperZ),
+      originOffset: [o[0], o[1], o[2]],
+      cabinRoofY: pack.cFront.roofY - o[1],
+      cabinFrontZ: pack.cFront.z - o[2],
+      cabinRearZ: pack.cRear.z - o[2],
+      floorY: pack.floorY - o[1]
     };
 
     return {

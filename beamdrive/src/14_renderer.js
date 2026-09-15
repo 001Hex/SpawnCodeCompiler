@@ -406,8 +406,8 @@
       var pb = this.progBright.use();
       this.bloomA.bind();
       pb.uTex('uTex', this.sceneFBO.color);
-      pb.u1f('uThreshold', 1.05);
-      pb.u1f('uSoftKnee', 0.60);
+      pb.u1f('uThreshold', 1.45);
+      pb.u1f('uSoftKnee', 0.45);
       B.GL.drawFullscreen();
 
       var pbl = this.progBlur.use();

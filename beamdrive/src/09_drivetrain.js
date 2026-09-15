@@ -337,9 +337,15 @@
         wh._tyreDamp = 2 * muLong * Fn * tyres.stiffnessLong *
                        wh.radius * wh.radius / vref;
 
-        var slipMag = Math.min(u / 1.9, 3);
-        var sliding = Math.max(0, slipMag - 1.0);
-        wh.skid = M.damp(wh.skid, Math.min(sliding, 1) * (Fn > 200 ? 1 : 0), 14, dt);
+        /* Smoke and squeal come from the contact patch actually sliding, in
+           metres per second — not from normalised slip. Slip is divided by a
+           2.2 m/s floor at low speed, so a car creeping forward on idle
+           registers large slip and used to sit there smoking both front
+           tyres while stationary. */
+        var slipVelX = vx - wh.omega * wh.radius;
+        var slipVel = Math.sqrt(slipVelX * slipVelX + vy * vy);
+        var sliding = M.clamp((slipVel - 1.8) / 6.5, 0, 1);
+        wh.skid = M.damp(wh.skid, sliding * (Fn > 200 ? 1 : 0), 14, dt);
         totalSkid += wh.skid;
         slipSum += Math.abs(slipLong);
       }

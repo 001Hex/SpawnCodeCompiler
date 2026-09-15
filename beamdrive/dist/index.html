@@ -1525,8 +1525,13 @@ SHADOWFN,
 '    float cV = V_Smith(NoV, NoL, ca);',
 '    float cF = 0.04 + 0.96*pow(1.0-VoH, 5.0);',
 '    color += vec3(cD*cV*cF) * uSunColor * NoL * shadow * clearcoat;',
+'    // Keep the clearcoat sky reflection restrained.',
+'    // 0.04 + 0.96*fresnel approaches 1 at grazing angles, and a',
+'    // full-brightness sky probe times that smeared white across',
+'    // every bonnet and roof.',
 '    vec3 ccProbe = skyColor(R, uSunDir, uSunColor, uSkyZenith, uSkyHorizon, uTurbidity);',
-'    color += ccProbe * (0.04 + 0.96*pow(1.0-NoV,5.0)) * clearcoat * 0.55;',
+'    float ccF = 0.04 + 0.96*pow(1.0-NoV, 5.0);',
+'    color += ccProbe * ccF * clearcoat * 0.15;',
 '  }',
 '',
 '  // Glass: view-dependent opacity so it reads as a real pane.',
@@ -2938,16 +2943,32 @@ out.push(sec);
 }
 return out;
 }
+function archLiftAt(z, spec) {
+var lift = 0;
+var r = spec.wheel.radius;
+var half = r * 1.42;
+var axles = [spec.frontAxleZ, spec.rearAxleZ];
+for (var a = 0; a < 2; a++) {
+var d = Math.abs(z - axles[a]);
+if (d >= half) continue;
+var t = 1 - d / half;
+var l = Math.sqrt(t) * r * 1.16;
+if (l > lift) lift = l;
+}
+return lift;
+}
 function sectionOutline(s) {
 var fy = s.floorY, sw = s.sillW, sy = s.sillY;
 var bw = s.beltW, by = s.beltY, rw = s.roofW, ry = s.roofY;
 var shoulderY = by + (ry - by) * 0.42;
 var shoulderW = rw + (bw - rw) * 0.58;
+var arch = s.archLift || 0;
+var a1 = Math.min(arch, Math.max(sy - fy, 0) + (by - sy) * 0.55);
 var pts = [
 [0, fy],
-[sw * 0.62, fy],
-[sw, fy + (sy - fy) * 0.42],
-[bw * 0.985, sy + (by - sy) * 0.42],
+[sw * 0.62, fy + a1 * 0.30],
+[sw, fy + (sy - fy) * 0.42 + a1 * 0.92],
+[bw * 0.985, sy + (by - sy) * 0.42 + a1 * 0.34],
 [bw, by],
 [shoulderW, shoulderY],
 [rw * 1.02, by + (ry - by) * 0.84],
@@ -2957,6 +2978,47 @@ var pts = [
 var full = pts.slice();
 for (var i = pts.length - 2; i >= 1; i--) full.push([-pts[i][0], pts[i][1]]);
 return full;   // 16 points
+}
+function cabinRange(sections) {
+var maxRise = 0, i;
+for (i = 0; i < sections.length; i++) {
+var rise = sections[i].roofY - sections[i].beltY;
+if (rise > maxRise) maxRise = rise;
+}
+var threshold = Math.max(0.12, maxRise * 0.62);
+var first = -1, last = -1;
+for (i = 0; i < sections.length; i++) {
+if (sections[i].roofY - sections[i].beltY >= threshold) {
+if (first < 0) first = i;
+last = i;
+}
+}
+if (first < 0) {
+first = Math.floor(sections.length * 0.35);
+last = Math.floor(sections.length * 0.65);
+}
+return { first: first, last: last, threshold: threshold };
+}
+function cabinRig(spec, sections) {
+var cr = cabinRange(sections);
+var cFront = sections[cr.last];
+var cRear = sections[cr.first];
+var floorY = cFront.floorY + 0.035;
+var hipZ = cFront.z - 1.05;
+if (hipZ < cRear.z + 0.35) hipZ = cRear.z + 0.35;
+var hipY = floorY + 0.30;
+var driverX = (spec.rhd ? 1 : -1) * cFront.beltW * 0.42;
+return {
+range: cr, cFront: cFront, cRear: cRear, floorY: floorY, driverX: driverX,
+hipZ: hipZ, hipY: hipY,
+wheelZ: hipZ + 0.46, wheelY: hipY + 0.30,
+eyeZ: hipZ + 0.06, eyeY: hipY + 0.62,
+pedalZ: hipZ + 0.74, pedalY: floorY + 0.09,
+shifterZ: hipZ + 0.28,
+bonnetZ: cFront.z + 0.55, bonnetY: cFront.beltY + 0.06,
+bumperZ: sections[sections.length - 1].z - 0.25,
+bumperY: sections[sections.length - 1].beltY - 0.10
+};
 }
 var REGION = { FRONT: 0, REAR: 1, LEFT: 2, RIGHT: 3, ROOF: 4, FLOOR: 5, WHEEL: 6 };
 function buildLattice(spec) {
@@ -2990,7 +3052,7 @@ for (i = 0; i < nStations; i++) {
 var s = keys[i];
 var topW = s.roofY > s.beltY + 0.02 ? s.roofW : s.beltW * 0.80;
 var topY = s.roofY;
-var isCabin = s.roofY > s.beltY + 0.10;
+var isCabin = s.roofY > s.beltY + 0.10;   // structural: any raised roof
 var frameRef = isCabin || (i > 0 && i < nStations - 1);
 var sideGroupL = REGION.LEFT, sideGroupR = REGION.RIGHT;
 var endGroup = (i <= 1) ? REGION.REAR : ((i >= nStations - 2) ? REGION.FRONT : -1);
@@ -3260,12 +3322,9 @@ return Geo.loft(lofted, [1, 1, 1], true, 1);
 }
 function buildGlass(spec, sections) {
 var mb = new Geo.MeshBuilder();
-var cabin = [];
-for (var i = 0; i < sections.length; i++) {
-if (sections[i].roofY > sections[i].beltY + 0.10) cabin.push(i);
-}
-if (cabin.length < 2) return mb;
-var first = cabin[0], last = cabin[cabin.length - 1];
+var cr = cabinRange(sections);
+var first = cr.first, last = cr.last;
+if (last - first < 1) return mb;
 var inset = 0.018;
 for (var side = 0; side < 2; side++) {
 var sx = side === 0 ? -1 : 1;
@@ -3301,6 +3360,70 @@ else mb.quad(base, base + 1, base + 2, base + 3);
 }
 if (last < sections.length - 1) screen(last + 1, last, false);   // windscreen
 if (first > 0) screen(first - 1, first, true);                   // backlight
+mb.computeNormals();
+return mb;
+}
+function buildCabinShell(spec, sections) {
+var mb = new Geo.MeshBuilder();
+var cr = cabinRange(sections);
+var cabin = [];
+for (var i = cr.first; i <= cr.last; i++) cabin.push(i);
+if (cabin.length < 2) return mb;
+var headliner = [0.135, 0.138, 0.148];
+var doorCard = [0.098, 0.100, 0.110];
+var inset = 0.030;
+var ROOF = [6, 7, 8, 9, 10];
+var DOOR_R = [0, 1, 2, 3, 4];
+var DOOR_L = [12, 13, 14, 15, 0];
+function insetPt(p, cx, cy) {
+var dx = cx - p[0], dy = cy - p[1];
+var l = Math.hypot(dx, dy) || 1;
+return [p[0] + dx / l * inset, p[1] + dy / l * inset];
+}
+function strip(idxList, color) {
+for (var c = 0; c < cabin.length - 1; c++) {
+var sA = sections[cabin[c]], sB = sections[cabin[c + 1]];
+var oA = sectionOutline(sA), oB = sectionOutline(sB);
+var caY = (sA.floorY + sA.roofY) * 0.5, cbY = (sB.floorY + sB.roofY) * 0.5;
+for (var k = 0; k < idxList.length - 1; k++) {
+var i0 = idxList[k], i1 = idxList[k + 1];
+var a0 = insetPt(oA[i0], 0, caY), a1 = insetPt(oA[i1], 0, caY);
+var b0 = insetPt(oB[i0], 0, cbY), b1 = insetPt(oB[i1], 0, cbY);
+var base = mb.vertexCount();
+mb.vert(a0[0], a0[1], sA.z, 0, 0, 0, 0, 0, color);
+mb.vert(a1[0], a1[1], sA.z, 0, 0, 0, 1, 0, color);
+mb.vert(b1[0], b1[1], sB.z, 0, 0, 0, 1, 1, color);
+mb.vert(b0[0], b0[1], sB.z, 0, 0, 0, 0, 1, color);
+mb.quad(base + 3, base + 2, base + 1, base);
+}
+}
+}
+strip(ROOF, headliner);
+strip(DOOR_R, doorCard);
+strip(DOOR_L, doorCard);
+function endCap(si, flip) {
+var s = sections[si];
+var o = sectionOutline(s);
+var cy = (s.floorY + s.roofY) * 0.5;
+var ring = ROOF.concat([11, 12, 13, 14, 15, 0, 1, 2, 3, 4, 5]);
+var cxm = 0, cym = 0;
+for (var q = 0; q < ring.length; q++) {
+var pt = insetPt(o[ring[q]], 0, cy);
+cxm += pt[0]; cym += pt[1];
+}
+cxm /= ring.length; cym /= ring.length;
+var ci = mb.vert(cxm, cym, s.z, 0, 0, flip ? 1 : -1, 0.5, 0.5, headliner);
+var start = mb.vertexCount();
+for (var r = 0; r < ring.length; r++) {
+var p = insetPt(o[ring[r]], 0, cy);
+mb.vert(p[0], p[1], s.z, 0, 0, flip ? 1 : -1, r / ring.length, 0, headliner);
+}
+for (var t = 0; t < ring.length - 1; t++) {
+if (flip) mb.tri(ci, start + t, start + t + 1);
+else mb.tri(ci, start + t + 1, start + t);
+}
+}
+endCap(cabin[0], false);
 mb.computeNormals();
 return mb;
 }
@@ -3368,14 +3491,12 @@ return mb;
 function buildInterior(spec, sections) {
 var mb = new Geo.MeshBuilder();
 var n = sections.length;
-var cabinIdx = [];
-for (var i = 0; i < n; i++) if (sections[i].roofY > sections[i].beltY + 0.10) cabinIdx.push(i);
-if (!cabinIdx.length) return mb;
-var cRear = sections[cabinIdx[0]];
-var cFront = sections[cabinIdx[cabinIdx.length - 1]];
+var rig = cabinRig(spec, sections);
+var cRear = rig.cRear, cFront = rig.cFront;
+if (rig.range.last - rig.range.first < 1) return mb;
 var midZ = (cRear.z + cFront.z) * 0.5;
 var cabinLen = cFront.z - cRear.z;
-var floorY = cFront.floorY + 0.035;
+var floorY = rig.floorY;
 var trimCol = [0.115, 0.118, 0.128];
 var seatCol = [0.075, 0.078, 0.088];
 function place(mesh, x, y, z, rx, ry) {
@@ -3390,16 +3511,16 @@ place(Geo.box(cFront.sillW * 1.70, 0.03, cabinLen + 0.34, trimCol), 0, floorY, m
 place(Geo.box(cFront.sillW * 1.70, 0.34, 0.05, trimCol), 0, floorY + 0.17, cRear.z - 0.06);
 place(Geo.roundedBox(cFront.beltW * 1.72, 0.17, 0.32, 0.035, trimCol, 2),
 0, cFront.beltY - 0.055, cFront.z - 0.12, 0.26);
-var dx = (spec.rhd ? 1 : -1) * cFront.beltW * 0.46;
+var dx = rig.driverX;
 place(Geo.roundedBox(0.34, 0.11, 0.17, 0.03, [0.045, 0.045, 0.055], 2),
 dx, cFront.beltY - 0.012, cFront.z - 0.26, 0.30);
-place(Geo.roundedBox(0.20, 0.23, 0.54, 0.03, trimCol, 2), 0, floorY + 0.115, cFront.z - 0.52);
-place(Geo.cylinder(0.013, 0.018, 0.17, 8, [0.14, 0.14, 0.15], true), 0, floorY + 0.29, cFront.z - 0.42);
-place(Geo.sphere(0.033, 10, 8, [0.085, 0.085, 0.095]), 0, floorY + 0.375, cFront.z - 0.42);
+place(Geo.roundedBox(0.20, 0.23, 0.58, 0.03, trimCol, 2), 0, floorY + 0.115, rig.shifterZ - 0.10);
+place(Geo.cylinder(0.013, 0.018, 0.17, 8, [0.14, 0.14, 0.15], true), 0, floorY + 0.29, rig.shifterZ);
+place(Geo.sphere(0.033, 10, 8, [0.085, 0.085, 0.095]), 0, floorY + 0.375, rig.shifterZ);
 place(Geo.roundedBox(0.035, 0.035, 0.22, 0.014, [0.10, 0.10, 0.11], 2),
-0.085, floorY + 0.26, cFront.z - 0.66, -0.55);
-var seatX = cFront.beltW * 0.44;
-var seatZ = cFront.z - 0.78;
+0.085, floorY + 0.26, rig.shifterZ - 0.26, -0.55);
+var seatX = Math.abs(rig.driverX);
+var seatZ = rig.hipZ - 0.06;
 for (var s = 0; s < 2; s++) {
 var sx = (s === 0 ? -1 : 1) * seatX;
 place(Geo.roundedBox(0.44, 0.11, 0.50, 0.05, seatCol, 2), sx, floorY + 0.13, seatZ + 0.10);
@@ -3416,7 +3537,7 @@ place(Geo.roundedBox(cFront.sillW * 1.50, 0.54, 0.12, 0.05, seatCol, 2),
 }
 for (var p = 0; p < 2; p++) {
 place(Geo.roundedBox(0.075, 0.015, 0.14, 0.006, [0.16, 0.16, 0.17], 1),
-dx + (p === 0 ? 0.075 : -0.075), floorY + 0.075, cFront.z + 0.06, 0.45);
+rig.driverX + (p === 0 ? 0.075 : -0.075), rig.pedalY - 0.015, rig.pedalZ, 0.45);
 }
 mb.computeNormals();
 return mb;
@@ -3448,11 +3569,15 @@ return mb;
 }
 B.buildSteeringWheel = buildSteeringWheel;
 function buildVehicle(spec, paintColor) {
-var sections = resampleStations(spec.stations, spec.meshSections || 20);
+var sections = resampleStations(spec.stations, (spec.meshSections || 20) * 2);
+for (var si = 0; si < sections.length; si++) {
+sections[si].archLift = archLiftAt(sections[si].z, spec);
+}
 var lattice = buildLattice(spec);
 var body = new B.SoftBody({ nodes: lattice.nodes, beams: lattice.beams });
 body.boundRadius = spec.length * 0.62;
 var shellMB = buildBodyShell(spec, sections);
+var cabinMB = buildCabinShell(spec, sections);
 var glassMB = buildGlass(spec, sections);
 var lightMB = new Geo.MeshBuilder();
 var trimMB = buildTrim(spec, sections, lightMB);
@@ -3477,6 +3602,18 @@ type: 2, baseColor: [0.08, 0.10, 0.12], roughness: 0.05, metallic: 0,
 clearcoat: 1, opacity: 0.30, transparent: true, doubleSided: true
 },
 recomputeNormals: false
+});
+}
+if (cabinMB.idx.length) {
+parts.push({
+name: 'cabin',
+skin: new B.SkinnedMesh(cabinMB.toData(), lattice, { stiffness: 1.0 }),
+material: {
+type: 0, baseColor: [1, 1, 1], roughness: 0.88, metallic: 0.02,
+clearcoat: 0, opacity: 1, doubleSided: true
+},
+recomputeNormals: true,
+castShadow: false
 });
 }
 parts.push({
@@ -3508,31 +3645,25 @@ recomputeNormals: true
 var wheelGeom = Geo.wheel(spec.wheel.radius, spec.wheel.width,
 spec.wheel.rim, spec.wheel.spokes || 5,
 [0.035, 0.035, 0.040], spec.wheel.rimColor || [0.58, 0.60, 0.64]).toGeometry();
-var cFront = null, cRear = null;
-for (var ci = sections.length - 1; ci >= 0; ci--) {
-if (sections[ci].roofY > sections[ci].beltY + 0.10) { cFront = sections[ci]; break; }
-}
-for (var cj = 0; cj < sections.length; cj++) {
-if (sections[cj].roofY > sections[cj].beltY + 0.10) { cRear = sections[cj]; break; }
-}
-if (!cFront) cFront = sections[Math.floor(sections.length / 2)];
-if (!cRear) cRear = cFront;
-var driverX = (spec.rhd ? 1 : -1) * cFront.beltW * 0.44;
-var floorY = cFront.floorY + 0.035;
-var seatZ = cFront.z - 0.78;
+var pack = cabinRig(spec, sections);
 var wheelRadius = spec.steeringWheelRadius || 0.175;
+var o = body.frameRestCenter;
+function rebase(x, y, z) { return [x - o[0], y - o[1], z - o[2]]; }
 var rig = {
-hipPos: [driverX, floorY + 0.26, seatZ + 0.02],
-wheelPos: [driverX, cFront.beltY - 0.045, cFront.z - 0.40],
+hipPos: rebase(pack.driverX, pack.hipY, pack.hipZ),
+wheelPos: rebase(pack.driverX, pack.wheelY, pack.wheelZ),
 wheelRadius: wheelRadius,
 wheelTilt: 0.38,
-pedalPos: [driverX, floorY + 0.09, cFront.z + 0.04],
-shifterPos: [0, floorY + 0.375, cFront.z - 0.42],
-eyePos: [driverX, cFront.beltY + (cFront.roofY - cFront.beltY) * 0.40, seatZ + 0.14],
-cabinRoofY: cFront.roofY,
-cabinFrontZ: cFront.z,
-cabinRearZ: cRear.z,
-floorY: floorY
+pedalPos: rebase(pack.driverX, pack.pedalY, pack.pedalZ),
+shifterPos: rebase(0, pack.floorY + 0.375, pack.shifterZ),
+eyePos: rebase(pack.driverX, pack.eyeY, pack.eyeZ),
+bonnetPos: rebase(pack.driverX * 0.30, pack.bonnetY, pack.bonnetZ),
+bumperPos: rebase(0, pack.bumperY, pack.bumperZ),
+originOffset: [o[0], o[1], o[2]],
+cabinRoofY: pack.cFront.roofY - o[1],
+cabinFrontZ: pack.cFront.z - o[2],
+cabinRearZ: pack.cRear.z - o[2],
+floorY: pack.floorY - o[1]
 };
 return {
 spec: spec,
@@ -3591,11 +3722,11 @@ arbFront: 11000, arbRear: 6000 },
 engine: { peakTorque: 128, redline: 6500, idle: 850, curve: CURVE_NA,
 inertia: 0.16, sound: { base: 46, harmonics: [1, 2, 3, 4.5], growl: 0.25 } },
 gearbox: { final: 4.05, ratios: [-3.55, 0, 3.45, 1.95, 1.28, 0.95, 0.76],
-shiftTime: 0.34, autoUp: 0.90, autoDown: 0.42 },
+shiftTime: 0.34, autoUp: 0.86, autoDown: 0.42 },
 brakes: { maxTorque: 2100, frontBias: 0.66 },
 steering: { maxAngle: 0.62, speedFalloff: 0.55, ratio: 2.6 },
 tyres: { gripLong: 1.18, gripLat: 1.10, stiffnessLong: 14, stiffnessLat: 9.5 },
-aero: { drag: 0.62, lift: -0.05, frontal: 2.05 },
+aero: { drag: 0.33, lift: -0.05, frontal: 2.10 },
 steeringWheelRadius: 0.172,
 colors: [
 [0.78, 0.20, 0.17], [0.92, 0.92, 0.94], [0.16, 0.36, 0.62],
@@ -3633,11 +3764,11 @@ arbFront: 14000, arbRear: 8000 },
 engine: { peakTorque: 238, redline: 6200, idle: 750, curve: CURVE_NA,
 inertia: 0.22, sound: { base: 40, harmonics: [1, 2, 3, 4, 6], growl: 0.18 } },
 gearbox: { final: 3.62, ratios: [-3.20, 0, 3.30, 2.05, 1.42, 1.03, 0.79, 0.64],
-shiftTime: 0.30, autoUp: 0.86, autoDown: 0.38 },
+shiftTime: 0.30, autoUp: 0.84, autoDown: 0.38 },
 brakes: { maxTorque: 3000, frontBias: 0.64 },
 steering: { maxAngle: 0.58, speedFalloff: 0.52, ratio: 2.7 },
 tyres: { gripLong: 1.20, gripLat: 1.14, stiffnessLong: 15, stiffnessLat: 10.5 },
-aero: { drag: 0.58, lift: -0.08, frontal: 2.20 },
+aero: { drag: 0.30, lift: -0.08, frontal: 2.24 },
 steeringWheelRadius: 0.182,
 colors: [
 [0.78, 0.79, 0.81], [0.09, 0.10, 0.12], [0.20, 0.30, 0.52],
@@ -3675,11 +3806,11 @@ arbFront: 20000, arbRear: 15000 },
 engine: { peakTorque: 624, redline: 6800, idle: 720, curve: CURVE_V8,
 inertia: 0.34, sound: { base: 28, harmonics: [1, 2, 3, 4, 5, 7], growl: 0.62 } },
 gearbox: { final: 3.31, ratios: [-2.90, 0, 2.66, 1.78, 1.30, 1.00, 0.80, 0.63],
-shiftTime: 0.22, autoUp: 0.94, autoDown: 0.44 },
+shiftTime: 0.22, autoUp: 0.90, autoDown: 0.44 },
 brakes: { maxTorque: 4200, frontBias: 0.60 },
 steering: { maxAngle: 0.54, speedFalloff: 0.62, ratio: 2.4 },
 tyres: { gripLong: 1.34, gripLat: 1.26, stiffnessLong: 17, stiffnessLat: 12 },
-aero: { drag: 0.60, lift: -0.18, frontal: 2.28 },
+aero: { drag: 0.35, lift: -0.18, frontal: 2.30 },
 steeringWheelRadius: 0.178,
 colors: [
 [0.72, 0.09, 0.08], [0.08, 0.08, 0.09], [0.93, 0.62, 0.05],
@@ -3717,11 +3848,11 @@ arbFront: 22000, arbRear: 11000 },
 engine: { peakTorque: 710, redline: 4600, idle: 650, curve: CURVE_DIESEL,
 inertia: 0.52, sound: { base: 22, harmonics: [1, 2, 3, 5], growl: 0.75 } },
 gearbox: { final: 3.92, ratios: [-3.10, 0, 3.80, 2.20, 1.50, 1.10, 0.85, 0.68],
-shiftTime: 0.42, autoUp: 0.80, autoDown: 0.34 },
+shiftTime: 0.42, autoUp: 0.78, autoDown: 0.34 },
 brakes: { maxTorque: 5200, frontBias: 0.58 },
 steering: { maxAngle: 0.52, speedFalloff: 0.48, ratio: 3.2 },
 tyres: { gripLong: 1.10, gripLat: 0.98, stiffnessLong: 12, stiffnessLat: 8.0 },
-aero: { drag: 0.92, lift: 0.04, frontal: 3.30 },
+aero: { drag: 0.45, lift: 0.04, frontal: 3.35 },
 steeringWheelRadius: 0.205,
 colors: [
 [0.16, 0.36, 0.26], [0.86, 0.87, 0.89], [0.35, 0.22, 0.13],
@@ -3759,11 +3890,11 @@ arbFront: 23000, arbRear: 21000 },
 engine: { peakTorque: 452, redline: 8200, idle: 950, curve: CURVE_TURBO,
 inertia: 0.20, sound: { base: 52, harmonics: [1, 2, 3, 4, 5, 6, 8], growl: 0.32 } },
 gearbox: { final: 3.75, ratios: [-3.00, 0, 3.10, 2.12, 1.58, 1.24, 1.00, 0.82, 0.68],
-shiftTime: 0.13, autoUp: 0.96, autoDown: 0.46 },
+shiftTime: 0.13, autoUp: 0.92, autoDown: 0.46 },
 brakes: { maxTorque: 4400, frontBias: 0.62 },
 steering: { maxAngle: 0.55, speedFalloff: 0.66, ratio: 2.2 },
 tyres: { gripLong: 1.48, gripLat: 1.44, stiffnessLong: 19, stiffnessLat: 14 },
-aero: { drag: 0.52, lift: -0.42, frontal: 1.90 },
+aero: { drag: 0.32, lift: -0.42, frontal: 1.92 },
 steeringWheelRadius: 0.168,
 colors: [
 [0.86, 0.72, 0.06], [0.70, 0.06, 0.07], [0.06, 0.07, 0.09],
@@ -3800,11 +3931,11 @@ arbFront: 16000, arbRear: 13000 },
 engine: { peakTorque: 398, redline: 7200, idle: 950, curve: CURVE_TURBO,
 inertia: 0.19, sound: { base: 44, harmonics: [1, 2, 3, 4, 5.5], growl: 0.40 } },
 gearbox: { final: 4.10, ratios: [-3.40, 0, 3.25, 2.10, 1.55, 1.18, 0.94, 0.78],
-shiftTime: 0.16, autoUp: 0.94, autoDown: 0.46 },
+shiftTime: 0.16, autoUp: 0.90, autoDown: 0.46 },
 brakes: { maxTorque: 3800, frontBias: 0.62 },
 steering: { maxAngle: 0.66, speedFalloff: 0.58, ratio: 2.3 },
 tyres: { gripLong: 1.30, gripLat: 1.22, stiffnessLong: 16, stiffnessLat: 11 },
-aero: { drag: 0.66, lift: -0.22, frontal: 2.12 },
+aero: { drag: 0.36, lift: -0.22, frontal: 2.16 },
 steeringWheelRadius: 0.170,
 colors: [
 [0.10, 0.28, 0.66], [0.90, 0.91, 0.93], [0.82, 0.30, 0.04],
@@ -4092,9 +4223,10 @@ wh._sideT = tyreT + rollRes + brakeApplied;
 wh._capacity = muLong * Fn * wh.radius;
 wh._tyreDamp = 2 * muLong * Fn * tyres.stiffnessLong *
 wh.radius * wh.radius / vref;
-var slipMag = Math.min(u / 1.9, 3);
-var sliding = Math.max(0, slipMag - 1.0);
-wh.skid = M.damp(wh.skid, Math.min(sliding, 1) * (Fn > 200 ? 1 : 0), 14, dt);
+var slipVelX = vx - wh.omega * wh.radius;
+var slipVel = Math.sqrt(slipVelX * slipVelX + vy * vy);
+var sliding = M.clamp((slipVel - 1.8) / 6.5, 0, 1);
+wh.skid = M.damp(wh.skid, sliding * (Fn > 200 ? 1 : 0), 14, dt);
 totalSkid += wh.skid;
 slipSum += Math.abs(slipLong);
 }
@@ -6434,8 +6566,8 @@ if (this.q.bloom) {
 var pb = this.progBright.use();
 this.bloomA.bind();
 pb.uTex('uTex', this.sceneFBO.color);
-pb.u1f('uThreshold', 1.05);
-pb.u1f('uSoftKnee', 0.60);
+pb.u1f('uThreshold', 1.45);
+pb.u1f('uSoftKnee', 0.45);
 B.GL.drawFullscreen();
 var pbl = this.progBlur.use();
 this.bloomB.bind();
@@ -6688,14 +6820,14 @@ renderer.stats.drawCalls++;
 Particles.prototype.clear = function () { this.count = 0; };
 Particles.prototype.tyreSmoke = function (x, y, z, vx, vz, intensity, surface) {
 var tint = [0.80, 0.80, 0.82];
-var alpha = 0.16 * intensity;
-var size = 0.30;
+var alpha = 0.085 * intensity;
+var size = 0.22;
 if (surface === B.SURF.DIRT || surface === B.SURF.SAND) {
-tint = [0.52, 0.42, 0.29]; alpha = 0.26 * intensity; size = 0.42;
+tint = [0.52, 0.42, 0.29]; alpha = 0.15 * intensity; size = 0.30;
 } else if (surface === B.SURF.GRASS) {
-tint = [0.40, 0.42, 0.26]; alpha = 0.18 * intensity; size = 0.34;
+tint = [0.40, 0.42, 0.26]; alpha = 0.10 * intensity; size = 0.26;
 } else if (surface === B.SURF.SNOW) {
-tint = [0.94, 0.95, 0.98]; alpha = 0.30 * intensity; size = 0.40;
+tint = [0.94, 0.95, 0.98]; alpha = 0.17 * intensity; size = 0.30;
 }
 this.spawn({
 x: x + (Math.random() - 0.5) * 0.22,
@@ -6705,7 +6837,7 @@ vx: vx * 0.16 + (Math.random() - 0.5) * 1.1,
 vy: 0.5 + Math.random() * 1.0,
 vz: vz * 0.16 + (Math.random() - 0.5) * 1.1,
 life: 0.9 + Math.random() * 1.1,
-size0: size, size1: size * 4.6,
+size0: size, size1: size * 3.4,
 color: tint, alpha: alpha, drag: 1.5, gravity: 0.35, soft: 1
 });
 };
@@ -6882,7 +7014,7 @@ this._shakeRot[0] = n.n3(t * 11.0, 5.0, 0.0) * amp * 0.30;
 this._shakeRot[1] = n.n3(5.0, t * 12.0, 0.0) * amp * 0.30;
 this._shakeRot[2] = n.n3(0.0, 5.0, t * 10.0) * amp * 0.55;
 var speedFov = Math.min(speed / 62, 1.25) * 13 * M.DEG * this.fovSpeedGain;
-var targetFov = this.baseFov + speedFov;
+var targetFov = this.baseFov + speedFov + (this.fovBoost || 0);
 this._fov = M.damp(this._fov, targetFov, 3.2, dt);
 this.fov = this._fov;
 this.buildMatrices();
@@ -6900,32 +7032,33 @@ var upright = body.getUprightness();
 var local = null, lookLocal = null;
 var stiff = 7.0, lookStiff = 9.0;
 var useBodyUp = false;
+var fovBoost = 0;
 var len = veh.spec.length;
 switch (this.mode) {
 case 'chase':
-local = [0, 0.62 * veh.spec.height + 0.42, -len * 0.92 - 1.35];
-lookLocal = [0, 0.42 * veh.spec.height + 0.20, 2.2];
+local = [0, 0.30 * veh.spec.height + 0.42, -len * 0.92 - 1.35];
+lookLocal = [0, 0.10 * veh.spec.height + 0.20, 2.2];
 stiff = 6.5; lookStiff = 10;
 break;
 case 'chaseFar':
-local = [0, 0.95 * veh.spec.height + 1.55, -len * 1.55 - 2.6];
-lookLocal = [0, 0.40 * veh.spec.height, 3.0];
+local = [0, 0.55 * veh.spec.height + 1.55, -len * 1.55 - 2.6];
+lookLocal = [0, 0.08 * veh.spec.height, 3.0];
 stiff = 4.4; lookStiff = 8;
 break;
 case 'bonnet':
-local = [rig.wheelPos[0] * 0.30, veh.spec.height * 0.62,
-veh.spec.length * 0.20];
-lookLocal = [0, veh.spec.height * 0.55, 14];
+local = rig.bonnetPos;
+lookLocal = [rig.bonnetPos[0], rig.bonnetPos[1] - 0.10, rig.bonnetPos[2] + 14];
 stiff = 40; lookStiff = 26; useBodyUp = true;
 break;
 case 'cockpit':
-local = [rig.eyePos[0], rig.eyePos[1] + 0.045, rig.eyePos[2] + 0.02];
-lookLocal = [rig.eyePos[0], rig.eyePos[1], rig.eyePos[2] + 14];
+local = [rig.eyePos[0], rig.eyePos[1] + 0.035, rig.eyePos[2] - 0.10];
+lookLocal = [rig.eyePos[0] * 0.55, rig.eyePos[1] - 0.12, rig.eyePos[2] + 14];
 stiff = 60; lookStiff = 34; useBodyUp = true;
+fovBoost = 9 * M.DEG;
 break;
 case 'bumper':
-local = [0, veh.spec.height * 0.24, veh.spec.length * 0.46];
-lookLocal = [0, veh.spec.height * 0.24, 16];
+local = rig.bumperPos;
+lookLocal = [0, rig.bumperPos[1], rig.bumperPos[2] + 16];
 stiff = 48; lookStiff = 30; useBodyUp = true;
 break;
 }
@@ -6981,6 +7114,7 @@ targetRoll = M.clamp(-latG * 0.016, -0.09, 0.09);
 this._roll = M.damp(this._roll, targetRoll, 4.5, dt);
 }
 this.roll = this._roll;
+this.fovBoost = fovBoost;
 this.position.set(this._pos);
 this.target.set(this._look);
 };
@@ -7147,53 +7281,84 @@ s.buffer = this.noiseBuffer;
 s.loop = loop !== false;
 return s;
 };
+Audio.prototype.engineWave = function (harmonics, growl) {
+var key = harmonics.join(',') + '|' + growl.toFixed(2);
+this._waveCache = this._waveCache || {};
+if (this._waveCache[key]) return this._waveCache[key];
+var N = 34;
+var real = new Float32Array(N);
+var imag = new Float32Array(N);
+for (var k = 1; k < N; k++) {
+var amp = 1 / (1 + k * 0.62);
+var emph = 0.42;
+for (var h = 0; h < harmonics.length; h++) {
+var m = harmonics[h];
+if (Math.abs(k - m) < 0.51) emph = 1.65;
+else if (Math.abs(k - m * 2) < 0.51) emph = Math.max(emph, 1.05);
+}
+if (k <= 3) emph *= 1 + growl * 0.85;
+imag[k] = amp * emph;
+}
+var w = this.ctx.createPeriodicWave(real, imag, { disableNormalization: false });
+this._waveCache[key] = w;
+return w;
+};
 Audio.prototype.buildEngine = function () {
 var ctx = this.ctx;
-this.engine = { oscs: [], gains: [] };
 var shaper = this.engineShaper = ctx.createWaveShaper();
 var curve = new Float32Array(1024);
 for (var i = 0; i < 1024; i++) {
 var x = (i / 1023) * 2 - 1;
-curve[i] = Math.tanh(x * 2.1) * 0.82 + Math.tanh(x * 5.5) * 0.18;
+curve[i] = Math.tanh(x * 1.9) * 0.80 + Math.tanh(x * 5.0) * 0.20;
 }
 shaper.curve = curve;
 shaper.oversample = '2x';
 var tone = this.engineTone = ctx.createGain();
-tone.gain.value = 0.42;
+tone.gain.value = 0.50;
 var lp = this.engineLP = ctx.createBiquadFilter();
 lp.type = 'lowpass';
 lp.frequency.value = 900;
-lp.Q.value = 0.9;
+lp.Q.value = 0.8;
 var hp = this.engineHP = ctx.createBiquadFilter();
 hp.type = 'highpass';
-hp.frequency.value = 42;
+hp.frequency.value = 48;
 var body = this.engineBody = ctx.createBiquadFilter();
 body.type = 'peaking';
 body.frequency.value = 180;
-body.Q.value = 1.1;
-body.gain.value = 6;
+body.Q.value = 1.4;
+body.gain.value = 7;
+var pipe = this.enginePipe = ctx.createBiquadFilter();
+pipe.type = 'peaking';
+pipe.frequency.value = 480;
+pipe.Q.value = 2.2;
+pipe.gain.value = 5;
 tone.connect(shaper);
 shaper.connect(body);
-body.connect(lp);
+body.connect(pipe);
+pipe.connect(lp);
 lp.connect(hp);
 hp.connect(this.engineBus);
-for (var h = 0; h < 7; h++) {
-var o = ctx.createOscillator();
-o.type = h === 0 ? 'sawtooth' : (h % 2 ? 'square' : 'sawtooth');
-o.frequency.value = 60;
-var g = ctx.createGain();
-g.gain.value = 0;
-o.connect(g);
-g.connect(tone);
-o.start();
-this.engine.oscs.push(o);
-this.engine.gains.push(g);
-}
+var osc = this.engineOsc = ctx.createOscillator();
+osc.frequency.value = 60;
+var og = this.engineOscGain = ctx.createGain();
+og.gain.value = 0;
+osc.connect(og);
+og.connect(tone);
+osc.start();
+var sub = this.engineSub = ctx.createOscillator();
+sub.type = 'sawtooth';
+sub.frequency.value = 30;
+var sg = this.engineSubGain = ctx.createGain();
+sg.gain.value = 0;
+sub.connect(sg);
+sg.connect(tone);
+sub.start();
+this._waveKey = null;
 var n = this.engineNoise = this.noiseSource();
 var nbp = this.engineNoiseBP = ctx.createBiquadFilter();
 nbp.type = 'bandpass';
 nbp.frequency.value = 420;
-nbp.Q.value = 0.85;
+nbp.Q.value = 0.8;
 var ng = this.engineNoiseGain = ctx.createGain();
 ng.gain.value = 0;
 n.connect(nbp);
@@ -7265,17 +7430,20 @@ var load = M.clamp(s.load, 0, 1);
 var rev = M.clamp((rpm - s.idle) / (s.redline - s.idle), 0, 1);
 var harmonics = s.harmonics || [1, 2, 3, 4];
 var growl = s.growl !== undefined ? s.growl : 0.3;
-for (var h = 0; h < this.engine.oscs.length; h++) {
-var mult = harmonics[h % harmonics.length] * (1 + Math.floor(h / harmonics.length));
-var freq = M.clamp(f0 * mult, 18, 11000);
-this.engine.oscs[h].frequency.setTargetAtTime(freq, now, tc);
-var base = 1 / (1 + mult * 0.85);
-var g = base * (0.30 + load * 0.78) * (h === 0 ? 1.25 : 1.0);
-if (mult > 3) g *= (0.35 + growl * 0.9);
-g *= s.engineOn ? 1 : 0;
-if (s.gearChanging) g *= 0.45;
-this.engine.gains[h].gain.setTargetAtTime(g * 0.30, now, tc);
+var key = harmonics.join(',') + '|' + growl.toFixed(2);
+if (key !== this._waveKey) {
+this.engineOsc.setPeriodicWave(this.engineWave(harmonics, growl));
+this._waveKey = key;
 }
+this.engineOsc.frequency.setTargetAtTime(M.clamp(f0, 12, 4000), now, tc);
+this.engineSub.frequency.setTargetAtTime(M.clamp(f0 * 0.5, 6, 2000), now, tc);
+var on = s.engineOn ? 1 : 0;
+var shiftCut = s.gearChanging ? 0.45 : 1;
+this.engineOscGain.gain.setTargetAtTime(
+(0.16 + load * 0.30) * on * shiftCut, now, tc);
+this.engineSubGain.gain.setTargetAtTime(
+(0.020 + load * 0.055) * growl * on * shiftCut, now, tc);
+this.enginePipe.frequency.setTargetAtTime(M.clamp(f0 * 4.0, 120, 3000), now, 0.07);
 this.engineLP.frequency.setTargetAtTime(
 M.clamp(420 + rev * 3400 + load * 2400, 300, 11000), now, 0.05);
 this.engineBody.frequency.setTargetAtTime(M.clamp(f0 * 2.1, 60, 900), now, 0.08);
@@ -7847,6 +8015,7 @@ d.gear = 0; d.throttle = 0.5;
 if (this.stuckTimer > 5.2) { this.stuckTimer = 0; d.gear = 2; }
 }
 };
+var MAX_STEP = 1 / 240;
 function Game(canvas) {
 this.canvas = canvas;
 this.renderer = new B.Renderer(canvas);
@@ -7868,9 +8037,9 @@ this.driver = null;
 this.ais = [];
 this.scene = { env: null, opaque: [], instanced: [], transparent: [], particles: null,
 headlight: { on: false, pos: [0, 0, 0], dir: [0, 0, 1] }, bloomStrength: 0.34 };
-this.accumulator = 0;
 this.fixedStep = 1 / 480;
-this.maxSteps = 20;
+this.maxSteps = 40;
+this.substeps = 0;
 this.time = 0;
 this.paused = false;
 this.running = false;
@@ -8156,14 +8325,13 @@ if (this.paused) return;
 this.applyInput();
 for (var a = 0; a < this.ais.length; a++) this.ais[a].update(dt);
 this.refreshBroadphase();
-this.accumulator += dt;
-var steps = 0;
-while (this.accumulator >= this.fixedStep && steps < this.maxSteps) {
-this.physicsStep(this.fixedStep);
-this.accumulator -= this.fixedStep;
-steps++;
-}
-if (steps >= this.maxSteps) this.accumulator = 0;   // give up rather than spiral
+var steps = Math.ceil(dt / this.fixedStep);
+if (steps < 1) steps = 1;
+if (steps > this.maxSteps) steps = this.maxSteps;
+var h = dt / steps;
+if (h > MAX_STEP) h = MAX_STEP;
+this.substeps = steps;
+for (var si = 0; si < steps; si++) this.physicsStep(h);
 this.postPhysics(dt);
 };
 Game.prototype.postPhysics = function (dt) {
@@ -8441,7 +8609,7 @@ var entry = {
 geometry: part.skin.geometry,
 matrix: frame,
 material: part.material,
-castShadow: part.name !== 'glass'
+castShadow: part.castShadow !== false && part.name !== 'glass'
 };
 if (part.material.transparent) s.transparent.push(entry);
 else s.opaque.push(entry);
@@ -8525,7 +8693,7 @@ hl.dir[1] = bf[9] - bf[5] * 0.14;
 hl.dir[2] = bf[10] - bf[6] * 0.14;
 V.normalize(hl.dir, hl.dir);
 }
-s.bloomStrength = 0.30 + (s.env.sunDir[1] < 0.2 ? 0.20 : 0);
+s.bloomStrength = 0.20 + (s.env.sunDir[1] < 0.2 ? 0.14 : 0);
 return s;
 };
 Game.prototype.render = function (dt) {
@@ -8539,7 +8707,7 @@ this.renderer.setPreset(name);
 var q = this.renderer.q;
 this.fixedStep = (name === 'low') ? 1 / 300
 : (name === 'medium' ? 1 / 360 : (name === 'ultra' ? 1 / 600 : 1 / 480));
-this.maxSteps = Math.ceil(0.045 / this.fixedStep);
+this.maxSteps = Math.ceil(0.085 / this.fixedStep);
 this.particles.enabled = name !== 'low';
 this.camera.far = q.drawDistance * 1.6;
 if (this.terrain && this.terrainMesh && this._terrainLOD !== q.terrainLOD) {
