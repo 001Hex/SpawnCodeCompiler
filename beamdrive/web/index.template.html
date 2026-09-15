@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0a0b0e">
+<meta name="description" content="BeamDrive Mobile — a soft-body crash driving sim that runs in the browser.">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="BeamDrive">
+<meta name="format-detection" content="telephone=no">
+<title>BeamDrive Mobile</title>
+<!--HEAD_EXTRA-->
+<style>/*STYLES*/</style>
+</head>
+<body>
+
+<canvas id="gl"></canvas>
+
+<!-- ======================================================= loading ==== -->
+<div id="loading" class="screen active">
+  <div class="load-inner">
+    <div class="wordmark"><span class="wm-a">BEAM</span><span class="wm-b">DRIVE</span></div>
+    <div class="wordmark-sub">MOBILE</div>
+    <div class="bar"><i id="load-bar"></i></div>
+    <div id="load-label" class="load-label">Starting up</div>
+    <div id="load-tip" class="load-tip"></div>
+  </div>
+</div>
+
+<!-- ========================================================== home ==== -->
+<div id="home" class="screen">
+  <div class="home-grid">
+    <header class="home-head">
+      <div class="wordmark small"><span class="wm-a">BEAM</span><span class="wm-b">DRIVE</span></div>
+      <div class="wordmark-sub small">MOBILE &middot; SOFT-BODY DRIVING</div>
+    </header>
+    <nav class="home-menu">
+      <button class="btn primary" data-go="drive">
+        <span class="btn-title">DRIVE</span>
+        <span class="btn-sub" id="home-drive-sub">Comet 1.4 &middot; Proving Grounds</span>
+      </button>
+      <button class="btn" data-go="garage"><span class="btn-title">GARAGE</span><span class="btn-sub">Pick a car and a colour</span></button>
+      <button class="btn" data-go="maps"><span class="btn-title">MAPS</span><span class="btn-sub">Five places to break it</span></button>
+      <button class="btn" data-go="settings"><span class="btn-title">SETTINGS</span><span class="btn-sub">Graphics, assists, audio</span></button>
+      <button class="btn" data-go="controls"><span class="btn-title">CONTROLS</span><span class="btn-sub">Touch, tilt or wheel</span></button>
+      <button class="btn ghost" data-go="about"><span class="btn-title">ABOUT</span></button>
+    </nav>
+    <footer class="home-foot">
+      <span id="version-tag">v1.0</span>
+      <span id="device-tag"></span>
+    </footer>
+  </div>
+</div>
+
+<!-- ======================================================== garage ==== -->
+<div id="garage" class="screen panel-screen">
+  <div class="topbar">
+    <button class="icon-btn" data-go="home">&#8592;</button>
+    <h2>GARAGE</h2>
+    <button class="icon-btn accent" data-go="drive">DRIVE</button>
+  </div>
+  <div class="garage-body">
+    <div class="car-strip" id="car-strip"></div>
+    <div class="car-detail">
+      <div class="car-headline">
+        <div>
+          <h3 id="car-name">&mdash;</h3>
+          <div class="car-class" id="car-class"></div>
+        </div>
+        <div class="car-badge" id="car-drive-badge">FWD</div>
+      </div>
+      <p class="car-blurb" id="car-blurb"></p>
+      <div class="stats" id="car-stats"></div>
+      <div class="swatch-row">
+        <label>PAINT</label>
+        <div id="colour-row" class="swatches"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ========================================================== maps ==== -->
+<div id="maps" class="screen panel-screen">
+  <div class="topbar">
+    <button class="icon-btn" data-go="home">&#8592;</button>
+    <h2>MAPS</h2>
+    <button class="icon-btn accent" data-go="drive">DRIVE</button>
+  </div>
+  <div class="map-list" id="map-list"></div>
+</div>
+
+<!-- ====================================================== settings ==== -->
+<div id="settings" class="screen panel-screen">
+  <div class="topbar">
+    <button class="icon-btn" data-go="home">&#8592;</button>
+    <h2>SETTINGS</h2>
+    <button class="icon-btn" id="settings-reset">RESET</button>
+  </div>
+  <div class="scroll" id="settings-body"></div>
+</div>
+
+<!-- ====================================================== controls ==== -->
+<div id="controls" class="screen panel-screen">
+  <div class="topbar">
+    <button class="icon-btn" data-go="home">&#8592;</button>
+    <h2>CONTROLS</h2>
+    <span style="width:64px"></span>
+  </div>
+  <div class="scroll" id="controls-body"></div>
+</div>
+
+<!-- ========================================================= about ==== -->
+<div id="about" class="screen panel-screen">
+  <div class="topbar">
+    <button class="icon-btn" data-go="home">&#8592;</button>
+    <h2>ABOUT</h2>
+    <span style="width:64px"></span>
+  </div>
+  <div class="scroll about-body" id="about-body"></div>
+</div>
+
+<!-- =========================================================== HUD ==== -->
+<div id="hud" class="hud hidden">
+
+  <div class="hud-top-left">
+    <div class="damage-card">
+      <svg viewBox="0 0 64 104" class="dmg-svg" aria-hidden="true">
+        <g id="dmg-groups" stroke="#0c0d11" stroke-width="1.4">
+          <rect id="dmg-front" x="12" y="4"  width="40" height="20" rx="5"></rect>
+          <rect id="dmg-left"  x="2"  y="26" width="14" height="52" rx="5"></rect>
+          <rect id="dmg-right" x="48" y="26" width="14" height="52" rx="5"></rect>
+          <rect id="dmg-roof"  x="18" y="30" width="28" height="44" rx="7"></rect>
+          <rect id="dmg-rear"  x="12" y="80" width="40" height="20" rx="5"></rect>
+        </g>
+      </svg>
+      <div class="dmg-meta">
+        <span class="dmg-label">DAMAGE</span>
+        <span class="dmg-value" id="dmg-pct">0%</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="hud-top-right">
+    <button class="hud-chip" id="btn-pause">II</button>
+    <div class="stat-block" id="stat-block"></div>
+  </div>
+
+  <div class="hud-center-top">
+    <div id="hud-toast" class="toast"></div>
+  </div>
+
+  <div class="hud-bottom-left">
+    <div class="dial">
+      <svg viewBox="0 0 200 200" class="dial-svg">
+        <circle cx="100" cy="100" r="86" class="dial-bg"></circle>
+        <path id="dial-track" class="dial-track" fill="none"></path>
+        <path id="dial-fill" class="dial-fill" fill="none"></path>
+        <path id="dial-redline" class="dial-redline" fill="none"></path>
+        <g id="dial-ticks"></g>
+        <line id="dial-needle" x1="100" y1="100" x2="100" y2="30" class="dial-needle"></line>
+        <circle cx="100" cy="100" r="9" class="dial-hub"></circle>
+      </svg>
+      <div class="dial-readout">
+        <span id="speed-value">0</span>
+        <span id="speed-unit" class="dial-unit">MPH</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="hud-bottom-center">
+    <div class="rev-strip"><i id="rev-fill"></i><b id="rev-limit"></b></div>
+    <div class="gear-row">
+      <span class="gear-mode" id="gear-mode">A</span>
+      <span class="gear" id="gear-value">N</span>
+      <span class="gear-rpm" id="rpm-value">0</span>
+    </div>
+  </div>
+
+  <div class="hud-bottom-right">
+    <div class="g-meter">
+      <svg viewBox="0 0 80 80">
+        <circle cx="40" cy="40" r="36" class="g-ring"></circle>
+        <circle cx="40" cy="40" r="24" class="g-ring faint"></circle>
+        <circle cx="40" cy="40" r="12" class="g-ring faint"></circle>
+        <line x1="4" y1="40" x2="76" y2="40" class="g-cross"></line>
+        <line x1="40" y1="4" x2="40" y2="76" class="g-cross"></line>
+        <circle id="g-dot" cx="40" cy="40" r="5" class="g-dot"></circle>
+      </svg>
+      <span class="g-label" id="g-label">0.0g</span>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================ touch controls ==== -->
+<div id="touch" class="touch hidden">
+  <div class="look-zone" id="look-zone"></div>
+
+  <div class="pad-left" id="pad-left">
+    <button class="pad steer" id="btn-left">&#9664;</button>
+    <button class="pad steer" id="btn-right">&#9654;</button>
+  </div>
+
+  <div class="wheel-zone hidden" id="wheel-zone">
+    <div class="vwheel" id="vwheel"><div class="vwheel-inner">
+      <svg viewBox="0 0 120 120">
+        <circle cx="60" cy="60" r="52" class="vw-rim"></circle>
+        <circle cx="60" cy="60" r="15" class="vw-hub"></circle>
+        <line x1="60" y1="75" x2="60" y2="108" class="vw-spoke"></line>
+        <line x1="45" y1="52" x2="12" y2="42" class="vw-spoke"></line>
+        <line x1="75" y1="52" x2="108" y2="42" class="vw-spoke"></line>
+        <path d="M60 8 l-7 11 h14 z" class="vw-mark"></path>
+      </svg>
+    </div></div>
+  </div>
+
+  <div class="slider-zone hidden" id="slider-zone"><span>drag to steer</span></div>
+
+  <div class="pad-right">
+    <button class="pad brake" id="btn-brake">BRAKE</button>
+    <button class="pad gas" id="btn-gas">GAS</button>
+  </div>
+
+  <div class="aux-row">
+    <button class="aux" id="btn-hand">HAND</button>
+    <button class="aux" id="btn-cam">CAM</button>
+    <button class="aux" id="btn-reset">RESET</button>
+    <button class="aux" id="btn-flip">FLIP</button>
+  </div>
+  <div class="shift-col hidden" id="shift-col">
+    <button class="aux" id="btn-up">+</button>
+    <button class="aux" id="btn-down">&minus;</button>
+  </div>
+</div>
+
+<!-- ========================================================= pause ==== -->
+<div id="pause" class="screen overlay">
+  <div class="pause-card">
+    <h2>PAUSED</h2>
+    <div class="pause-stats" id="pause-stats"></div>
+    <button class="btn primary" id="p-resume"><span class="btn-title">RESUME</span></button>
+    <button class="btn" id="p-repair"><span class="btn-title">REPAIR &amp; RESET</span></button>
+    <button class="btn" id="p-respawn"><span class="btn-title">RESPAWN AT START</span></button>
+    <button class="btn" id="p-settings"><span class="btn-title">SETTINGS</span></button>
+    <button class="btn ghost" id="p-quit"><span class="btn-title">QUIT TO MENU</span></button>
+  </div>
+</div>
+
+<div id="rotate-hint" class="rotate-hint hidden">
+  <div>
+    <div class="rot-icon">&#8635;</div>
+    <p>Turn your phone sideways</p>
+  </div>
+</div>
+
+<div id="fatal" class="fatal hidden"><div><h2>Could not start</h2><p id="fatal-msg"></p></div></div>
+
+<script>/*SCRIPTS*/</script>
+</body>
+</html>
